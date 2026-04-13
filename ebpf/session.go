@@ -63,6 +63,7 @@ type Session interface {
 	Update(SessionOptions) error
 	UpdateTargets(args sd.TargetsOptions)
 	DebugInfo() interface{}
+	SymbolCache() *symtab.SymbolCache
 }
 
 type SessionDebugInfo struct {
@@ -279,6 +280,10 @@ func (s *session) CollectProfiles(cb pprof.CollectProfilesCallback) error {
 	s.cleanup()
 
 	return nil
+}
+
+func (s *session) SymbolCache() *symtab.SymbolCache {
+	return s.symCache
 }
 
 func (s *session) DebugInfo() interface{} {
