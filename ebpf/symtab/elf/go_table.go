@@ -2,6 +2,7 @@ package elf
 
 import (
 	"debug/elf"
+	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -65,6 +66,80 @@ var (
 	errGoSymbolsNotFound = errors.New("gosymtab: no go symbols found")
 )
 
+// findRuntimeTextSymbol looks up the "runtime.text" symbol from .symtab.
+// In Go 1.26+, pcHeader.textStart is always zero, so we need another way to
+// find the base address used for functab PC offset calculations.
+func (f *MMapedElfFile) findRuntimeTextSymbol() uint64 {
+	symtabSection := f.sectionByType(elf.SHT_SYMTAB)
+	if symtabSection == nil {
+		return 0
+	}
+	// Find the linked string table section.
+	if int(symtabSection.Link) >= len(f.Sections) {
+		return 0
+	}
+	strtabSection := &f.Sections[symtabSection.Link]
+
+	symData, err := f.SectionData(symtabSection)
+	if err != nil {
+		return 0
+	}
+	strData, err := f.SectionData(strtabSection)
+	if err != nil {
+		return 0
+	}
+
+	var symSize int
+	var getValue func([]byte) uint64
+	switch f.Class {
+	case elf.ELFCLASS64:
+		symSize = elf.Sym64Size
+		getValue = func(b []byte) uint64 { return f.ByteOrder.Uint64(b[8:16]) }
+	case elf.ELFCLASS32:
+		symSize = elf.Sym32Size
+		getValue = func(b []byte) uint64 { return uint64(f.ByteOrder.Uint32(b[4:8])) }
+	default:
+		return 0
+	}
+
+	// Skip first (null) entry.
+	if len(symData) < symSize {
+		return 0
+	}
+	symData = symData[symSize:]
+
+	target := "runtime.text\x00"
+	for len(symData) >= symSize {
+		entry := symData[:symSize]
+		symData = symData[symSize:]
+
+		nameIdx := int(f.ByteOrder.Uint32(entry[:4]))
+		end := nameIdx + len(target)
+		if nameIdx < 0 || end > len(strData) {
+			continue
+		}
+		if string(strData[nameIdx:end]) == target {
+			return getValue(entry)
+		}
+	}
+	return 0
+}
+
+// isGo126OrLater returns true if the pclntab header uses Go 1.18+ magic and
+// has textStart == 0, which is the case for all Go 1.26+ binaries.
+// In Go 1.26 the textStart field in pcHeader was permanently set to zero.
+func isGo126OrLater(pclntabHeader []byte) bool {
+	if len(pclntabHeader) < 32 {
+		return false
+	}
+	magic := binary.LittleEndian.Uint32(pclntabHeader[0:4])
+	if magic != 0xFFFFFFF0 && magic != 0xFFFFFFF1 {
+		return false
+	}
+	textStart := binary.LittleEndian.Uint64(pclntabHeader[24:32])
+	return textStart == 0
+}
+
 func (f *MMapedElfFile) NewGoTable() (*GoTable, error) {
 	obj := f
 	var err error
@@ -90,9 +165,18 @@ func (f *MMapedElfFile) NewGoTable() (*GoTable, error) {
 	textStart := gosym2.ParseRuntimeTextFromPclntab18(pclntabHeader)
 
 	if textStart == 0 {
-		// for older versions text.Addr is enough
-		// https://github.com/golang/go/commit/b38ab0ac5f78ac03a38052018ff629c03e36b864
-		textStart = text.Addr
+		if isGo126OrLater(pclntabHeader) {
+			// Go 1.26+ sets pcHeader.textStart to zero intentionally.
+			// The functab entries are still relative offsets from runtime.text.
+			// Try to find runtime.text from the ELF symbol table first.
+			textStart = f.findRuntimeTextSymbol()
+		}
+		if textStart == 0 {
+			// Fallback: use the .text section virtual address.
+			// For non-PIE Go binaries, runtime.text == .text section address.
+			// https://github.com/golang/go/commit/b38ab0ac5f78ac03a38052018ff629c03e36b864
+			textStart = text.Addr
+		}
 	}
 	if textStart < text.Addr || textStart >= text.Addr+text.Size {
 		return nil, fmt.Errorf(" runtime.text out of .text bounds %d %d %d", textStart, text.Addr, text.Size)
@@ -109,12 +193,6 @@ func (f *MMapedElfFile) NewGoTable() (*GoTable, error) {
 	if len(funcs.Name) == 0 || funcs.Entry.Length() == 0 || funcs.End == 0 {
 		return nil, errGoSymbolsNotFound
 	}
-	//if funcs.Entry32 == nil && funcs.Entry64 == nil {
-	//	return nil, errGoParseFailed // this should not happen
-	//}
-	//if funcs.Entry32 != nil && funcs.Entry64 != nil {
-	//	return nil, errGoParseFailed // this should not happen
-	//}
 	if funcs.Entry.Length() != len(funcs.Name) {
 		return nil, errGoParseFailed // this should not happen
 	}
