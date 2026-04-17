@@ -35,6 +35,8 @@ func TestSelfGoSymbolComparison(t *testing.T) {
 		{"./testdata/elfs/go16-static", false}, // this one switches from 32 to 64 in the middle
 		{"./testdata/elfs/go18-static", false}, // this one starts with 64
 		{"./testdata/elfs/go20-static", true},
+		{"./testdata/elfs/go26", true},        // Go 1.26: pcHeader.textStart is always zero
+		{"./testdata/elfs/go26-static", true}, // Go 1.26: static build
 	}
 	for _, testcase := range ts {
 		t.Run(testcase.f, func(t *testing.T) {

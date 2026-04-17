@@ -26,6 +26,11 @@ ADD hello.go hello.go
 RUN go build hello.go
 RUN go build -ldflags="-extldflags=-static" -o hello-static hello.go
 
+FROM --platform=linux/amd64 golang:1.26 as go126
+ADD hello.go hello.go
+RUN go build hello.go
+RUN go build -ldflags="-extldflags=-static" -o hello-static hello.go
+
 FROM scratch
 COPY --from=builder elf elf.debug elf.stripped elf.debuglink elf.nopie elf.nobuildid libexample.so ./elfs/
 COPY --from=builder /usr/lib/debug/ ./usr/lib/debug/
@@ -33,7 +38,9 @@ COPY --from=go12 /go/hello ./elfs/go12
 COPY --from=go116 /go/hello ./elfs/go16
 COPY --from=go118 /go/hello ./elfs/go18
 COPY --from=go120 /go/hello ./elfs/go20
+COPY --from=go126 /go/hello ./elfs/go26
 COPY --from=go12 /go/hello-static ./elfs/go12-static
 COPY --from=go116 /go/hello-static ./elfs/go16-static
 COPY --from=go118 /go/hello-static ./elfs/go18-static
 COPY --from=go120 /go/hello-static ./elfs/go20-static
+COPY --from=go126 /go/hello-static ./elfs/go26-static
