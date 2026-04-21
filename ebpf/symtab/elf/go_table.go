@@ -65,6 +65,67 @@ var (
 	errGoSymbolsNotFound = errors.New("gosymtab: no go symbols found")
 )
 
+// findRuntimeTextSymbol looks up the "runtime.text" symbol from .symtab.
+// Since Go 1.26, pcHeader.textStart is always zero: the linker no longer
+// stores the text base in pclntab (the field required the only relocation
+// in that section and was otherwise unused).
+// See: https://github.com/golang/go/commit/0e1bd8b5f17e337df0ffb57af03419b96c695fe4
+func (f *MMapedElfFile) findRuntimeTextSymbol() uint64 {
+	symtabSection := f.sectionByType(elf.SHT_SYMTAB)
+	if symtabSection == nil {
+		return 0
+	}
+	// Find the linked string table section.
+	if int(symtabSection.Link) >= len(f.Sections) {
+		return 0
+	}
+	strtabSection := &f.Sections[symtabSection.Link]
+
+	symData, err := f.SectionData(symtabSection)
+	if err != nil {
+		return 0
+	}
+	strData, err := f.SectionData(strtabSection)
+	if err != nil {
+		return 0
+	}
+
+	var symSize int
+	var getValue func([]byte) uint64
+	switch f.Class {
+	case elf.ELFCLASS64:
+		symSize = elf.Sym64Size
+		getValue = func(b []byte) uint64 { return f.ByteOrder.Uint64(b[8:16]) }
+	case elf.ELFCLASS32:
+		symSize = elf.Sym32Size
+		getValue = func(b []byte) uint64 { return uint64(f.ByteOrder.Uint32(b[4:8])) }
+	default:
+		return 0
+	}
+
+	// Skip first (null) entry.
+	if len(symData) < symSize {
+		return 0
+	}
+	symData = symData[symSize:]
+
+	target := "runtime.text\x00"
+	for len(symData) >= symSize {
+		entry := symData[:symSize]
+		symData = symData[symSize:]
+
+		nameIdx := int(f.ByteOrder.Uint32(entry[:4]))
+		end := nameIdx + len(target)
+		if nameIdx < 0 || end > len(strData) {
+			continue
+		}
+		if string(strData[nameIdx:end]) == target {
+			return getValue(entry)
+		}
+	}
+	return 0
+}
+
 func (f *MMapedElfFile) NewGoTable() (*GoTable, error) {
 	obj := f
 	var err error
@@ -90,7 +151,12 @@ func (f *MMapedElfFile) NewGoTable() (*GoTable, error) {
 	textStart := gosym2.ParseRuntimeTextFromPclntab18(pclntabHeader)
 
 	if textStart == 0 {
-		// for older versions text.Addr is enough
+		// pcHeader.textStart is zero (Go 1.26+), fall back to .symtab.
+		textStart = f.findRuntimeTextSymbol()
+	}
+	if textStart == 0 {
+		// Fallback: use the .text section virtual address.
+		// For non-PIE pure-Go binaries, runtime.text == .text section address.
 		// https://github.com/golang/go/commit/b38ab0ac5f78ac03a38052018ff629c03e36b864
 		textStart = text.Addr
 	}
