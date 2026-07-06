@@ -27,6 +27,11 @@ type SymbolTableInterface interface {
 type SymbolIndex struct {
 	Name  Name
 	Value uint64
+	// Size is the symbol's st_size (function length in bytes), or 0 when the
+	// binary does not record it. It bounds a symbol to [Value, Value+Size) so
+	// that a PC in a gap between symbols is not misattributed to the nearest
+	// preceding symbol. See SymbolTable.Resolve.
+	Size uint32
 }
 
 type SectionLinkIndex uint8
@@ -52,6 +57,10 @@ type FlatSymbolIndex struct {
 	Links  []elf.SectionHeader
 	Names  []Name
 	Values gosym.PCIndex
+	// Sizes is parallel to Names/Values: Sizes[i] is the st_size of symbol i,
+	// or 0 when unknown. Used by Resolve to reject PCs that fall past a
+	// symbol's end.
+	Sizes []uint32
 }
 type SymbolTable struct {
 	Index      FlatSymbolIndex
@@ -104,6 +113,17 @@ func (st *SymbolTable) Resolve(addr uint64) string {
 	if i == -1 {
 		return ""
 	}
+	// FindIndex returns the symbol with the greatest Value <= addr, without an
+	// upper bound. In a stripped binary that keeps only a few .dynsym entries
+	// (e.g. an Envoy sidecar that exports symbols for dlopen'd modules), that
+	// nearest symbol can be arbitrarily far below addr, so a PC inside a
+	// stripped-out function gets attributed to an unrelated exported symbol.
+	// When the symbol's size is known, reject addresses beyond its end so such
+	// PCs resolve to "" (unknown) instead. Size 0 means unknown -> keep the
+	// legacy nearest-symbol behavior.
+	if size := st.Index.Sizes[i]; size > 0 && addr >= st.Index.Values.Value(i)+uint64(size) {
+		return ""
+	}
 	name, _ := st.symbolName(i)
 	return name
 }
@@ -144,6 +164,7 @@ func (f *InMemElfFile) NewSymbolTable(opt *SymbolsOptions, symReader ElfSymbolRe
 		},
 		Names:  make([]Name, total),
 		Values: gosym.NewPCIndex(total),
+		Sizes:  make([]uint32, total),
 	},
 		hasSection: map[elf.SectionType]bool{
 			elf.SHT_SYMTAB: len(sym) > 0,
@@ -156,6 +177,7 @@ func (f *InMemElfFile) NewSymbolTable(opt *SymbolsOptions, symReader ElfSymbolRe
 	for i := range all {
 		res.Index.Names[i] = all[i].Name
 		res.Index.Values.Set(i, all[i].Value)
+		res.Index.Sizes[i] = all[i].Size
 	}
 	return res, nil
 }

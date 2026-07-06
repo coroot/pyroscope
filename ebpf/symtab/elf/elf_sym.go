@@ -51,6 +51,18 @@ func (f *InMemElfFile) getSymbols(typ elf.SectionType, opt *SymbolsOptions) ([]S
 // if there is no such section in the File.
 var ErrNoSymbols = errors.New("no symbol section")
 
+// clampSymSize narrows a 64-bit st_size to the uint32 stored per symbol.
+// Function sizes never approach 4 GiB in practice; clamping keeps the value
+// nonzero (so the [Value, Value+Size) bound still applies) while avoiding
+// overflow wraparound.
+func clampSymSize(size uint64) uint32 {
+	const maxU32 = uint64(^uint32(0))
+	if size > maxU32 {
+		return uint32(maxU32)
+	}
+	return uint32(size)
+}
+
 func (f *InMemElfFile) getSymbols64(typ elf.SectionType, opt *SymbolsOptions) ([]SymbolIndex, uint32, error) {
 	symtabSection := f.sectionByType(typ)
 	if symtabSection == nil {
@@ -88,7 +100,7 @@ func (f *InMemElfFile) getSymbols64(typ elf.SectionType, opt *SymbolsOptions) ([
 			//Other: rawSym[5],
 			//Shndx: f.ByteOrder.Uint16(rawSym[6:8]), // not used
 			Value: f.ByteOrder.Uint64(rawSym[8:16]),
-			//Size:  f.ByteOrder.Uint64(rawSym[16:24]), // not used
+			Size:  f.ByteOrder.Uint64(rawSym[16:24]),
 		}
 
 		if sym.Value != 0 && sym.Info&0xf == byte(elf.STT_FUNC) {
@@ -101,6 +113,7 @@ func (f *InMemElfFile) getSymbols64(typ elf.SectionType, opt *SymbolsOptions) ([
 			}
 			symbols[i].Value = pc
 			symbols[i].Name = NewName(sym.Name, linkIndex)
+			symbols[i].Size = clampSymSize(sym.Size)
 			i++
 		}
 	}
@@ -142,8 +155,8 @@ func (f *InMemElfFile) getSymbols32(typ elf.SectionType, opt *SymbolsOptions) ([
 		sym = elf.Sym32{
 			Name:  f.ByteOrder.Uint32(rawSym[:4]),
 			Value: f.ByteOrder.Uint32(rawSym[4:8]),
-			//Size: f.ByteOrder.Uint32(rawSym[8:12]),
-			Info: rawSym[12],
+			Size:  f.ByteOrder.Uint32(rawSym[8:12]),
+			Info:  rawSym[12],
 			//Other: rawSym[13],
 			//Shndx: f.ByteOrder.Uint16(rawSym[14:16]),
 		}
@@ -156,7 +169,9 @@ func (f *InMemElfFile) getSymbols32(typ elf.SectionType, opt *SymbolsOptions) ([
 			if pc >= opt.FilterFrom && pc < opt.FilterTo {
 				continue
 			}
+			symbols[i].Value = pc
 			symbols[i].Name = NewName(sym.Name, linkIndex)
+			symbols[i].Size = sym.Size
 			i++
 		}
 	}
