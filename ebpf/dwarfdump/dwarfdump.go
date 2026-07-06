@@ -53,7 +53,10 @@ func (i *Index) GetTypeByName2(name string) *Typ {
 	for _, offset := range typedef.TypeOffsets {
 		typ := i.offset2Type[offset]
 		if typ == nil {
-			panic(fmt.Sprintf("%s %d not found", name, offset))
+			// Forward declaration (DW_AT_declaration, no byte_size): the type is
+			// defined completely in another compilation unit. Skip the incomplete
+			// entry and keep looking for the real definition.
+			continue
 		}
 		res = append(res, typ)
 		if len(res) > 0 {
