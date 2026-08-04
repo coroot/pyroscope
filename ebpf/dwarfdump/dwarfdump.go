@@ -53,7 +53,7 @@ func (i *Index) GetTypeByName2(name string) *Typ {
 	for _, offset := range typedef.TypeOffsets {
 		typ := i.offset2Type[offset]
 		if typ == nil {
-			panic(fmt.Sprintf("%s %d not found", name, offset))
+			continue // declaration-only DIE (size 0), not indexed
 		}
 		res = append(res, typ)
 		if len(res) > 0 {
@@ -64,7 +64,7 @@ func (i *Index) GetTypeByName2(name string) *Typ {
 		}
 	}
 	if len(res) == 0 {
-		return nil
+		return i.GetTypeByName(name)
 	}
 	return res[0]
 }
