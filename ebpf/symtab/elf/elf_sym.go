@@ -51,10 +51,6 @@ func (f *InMemElfFile) getSymbols(typ elf.SectionType, opt *SymbolsOptions) ([]S
 // if there is no such section in the File.
 var ErrNoSymbols = errors.New("no symbol section")
 
-// clampSymSize narrows a 64-bit st_size to the uint32 stored per symbol.
-// Function sizes never approach 4 GiB in practice; clamping keeps the value
-// nonzero (so the [Value, Value+Size) bound still applies) while avoiding
-// overflow wraparound.
 func clampSymSize(size uint64) uint32 {
 	const maxU32 = uint64(^uint32(0))
 	if size > maxU32 {

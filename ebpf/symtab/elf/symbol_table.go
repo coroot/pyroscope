@@ -25,12 +25,9 @@ type SymbolTableInterface interface {
 }
 
 type SymbolIndex struct {
-	Name  Name
 	Value uint64
-	// Size is the symbol's st_size (function length in bytes), or 0 when the
-	// binary does not record it. It bounds a symbol to [Value, Value+Size) so
-	// that a PC in a gap between symbols is not misattributed to the nearest
-	// preceding symbol. See SymbolTable.Resolve.
+	Name  Name
+	// st_size, or 0 when unknown; build-time only (see addEndOfSymbolSentinels)
 	Size uint32
 }
 
@@ -53,14 +50,30 @@ func (n *Name) LinkIndex() SectionLinkIndex {
 	return SectionLinkIndex(*n >> 31)
 }
 
+const sentinelNameIndex = 0x7fffffff
+
+const minGapSentinel = 64
+
+func addEndOfSymbolSentinels(all []SymbolIndex) []SymbolIndex {
+	out := make([]SymbolIndex, 0, len(all)+len(all)/64+1)
+	for i := range all {
+		out = append(out, all[i])
+		if all[i].Size == 0 {
+			continue
+		}
+		end := all[i].Value + uint64(all[i].Size)
+		if i+1 < len(all) && all[i+1].Value < end+minGapSentinel {
+			continue
+		}
+		out = append(out, SymbolIndex{Name: NewName(sentinelNameIndex, sectionTypeSym), Value: end})
+	}
+	return out
+}
+
 type FlatSymbolIndex struct {
 	Links  []elf.SectionHeader
 	Names  []Name
 	Values gosym.PCIndex
-	// Sizes is parallel to Names/Values: Sizes[i] is the st_size of symbol i,
-	// or 0 when unknown. Used by Resolve to reject PCs that fall past a
-	// symbol's end.
-	Sizes []uint32
 }
 type SymbolTable struct {
 	Index      FlatSymbolIndex
@@ -113,15 +126,7 @@ func (st *SymbolTable) Resolve(addr uint64) string {
 	if i == -1 {
 		return ""
 	}
-	// FindIndex returns the symbol with the greatest Value <= addr, without an
-	// upper bound. In a stripped binary that keeps only a few .dynsym entries
-	// (e.g. an Envoy sidecar that exports symbols for dlopen'd modules), that
-	// nearest symbol can be arbitrarily far below addr, so a PC inside a
-	// stripped-out function gets attributed to an unrelated exported symbol.
-	// When the symbol's size is known, reject addresses beyond its end so such
-	// PCs resolve to "" (unknown) instead. Size 0 means unknown -> keep the
-	// legacy nearest-symbol behavior.
-	if size := st.Index.Sizes[i]; size > 0 && addr >= st.Index.Values.Value(i)+uint64(size) {
+	if st.Index.Names[i].NameIndex() == sentinelNameIndex {
 		return ""
 	}
 	name, _ := st.symbolName(i)
@@ -156,15 +161,15 @@ func (f *InMemElfFile) NewSymbolTable(opt *SymbolsOptions, symReader ElfSymbolRe
 		}
 		return all[i].Value < all[j].Value
 	})
+	all = addEndOfSymbolSentinels(all)
 
 	res := &SymbolTable{Index: FlatSymbolIndex{
 		Links: []elf.SectionHeader{
 			f.Sections[sectionSym],    // should be at 0 - SectionTypeSym
 			f.Sections[sectionDynSym], // should be at 1 - SectionTypeDynSym
 		},
-		Names:  make([]Name, total),
-		Values: gosym.NewPCIndex(total),
-		Sizes:  make([]uint32, total),
+		Names:  make([]Name, len(all)),
+		Values: gosym.NewPCIndex(len(all)),
 	},
 		hasSection: map[elf.SectionType]bool{
 			elf.SHT_SYMTAB: len(sym) > 0,
@@ -177,7 +182,6 @@ func (f *InMemElfFile) NewSymbolTable(opt *SymbolsOptions, symReader ElfSymbolRe
 	for i := range all {
 		res.Index.Names[i] = all[i].Name
 		res.Index.Values.Set(i, all[i].Value)
-		res.Index.Sizes[i] = all[i].Size
 	}
 	return res, nil
 }
