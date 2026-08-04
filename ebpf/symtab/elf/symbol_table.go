@@ -25,8 +25,10 @@ type SymbolTableInterface interface {
 }
 
 type SymbolIndex struct {
-	Name  Name
 	Value uint64
+	Name  Name
+	// st_size, or 0 when unknown; build-time only (see addEndOfSymbolSentinels)
+	Size uint32
 }
 
 type SectionLinkIndex uint8
@@ -46,6 +48,26 @@ func (n *Name) NameIndex() uint32 {
 
 func (n *Name) LinkIndex() SectionLinkIndex {
 	return SectionLinkIndex(*n >> 31)
+}
+
+const sentinelNameIndex = 0x7fffffff
+
+const minGapSentinel = 64
+
+func addEndOfSymbolSentinels(all []SymbolIndex) []SymbolIndex {
+	out := make([]SymbolIndex, 0, len(all)+len(all)/64+1)
+	for i := range all {
+		out = append(out, all[i])
+		if all[i].Size == 0 {
+			continue
+		}
+		end := all[i].Value + uint64(all[i].Size)
+		if i+1 < len(all) && all[i+1].Value < end+minGapSentinel {
+			continue
+		}
+		out = append(out, SymbolIndex{Name: NewName(sentinelNameIndex, sectionTypeSym), Value: end})
+	}
+	return out
 }
 
 type FlatSymbolIndex struct {
@@ -104,6 +126,9 @@ func (st *SymbolTable) Resolve(addr uint64) string {
 	if i == -1 {
 		return ""
 	}
+	if st.Index.Names[i].NameIndex() == sentinelNameIndex {
+		return ""
+	}
 	name, _ := st.symbolName(i)
 	return name
 }
@@ -136,14 +161,15 @@ func (f *InMemElfFile) NewSymbolTable(opt *SymbolsOptions, symReader ElfSymbolRe
 		}
 		return all[i].Value < all[j].Value
 	})
+	all = addEndOfSymbolSentinels(all)
 
 	res := &SymbolTable{Index: FlatSymbolIndex{
 		Links: []elf.SectionHeader{
 			f.Sections[sectionSym],    // should be at 0 - SectionTypeSym
 			f.Sections[sectionDynSym], // should be at 1 - SectionTypeDynSym
 		},
-		Names:  make([]Name, total),
-		Values: gosym.NewPCIndex(total),
+		Names:  make([]Name, len(all)),
+		Values: gosym.NewPCIndex(len(all)),
 	},
 		hasSection: map[elf.SectionType]bool{
 			elf.SHT_SYMTAB: len(sym) > 0,
