@@ -82,6 +82,18 @@ func getGoSymbolsFromPCLN(obj *elf.File, patchGo20Magic bool) ([]TestSym, error)
 	textStart := gosym2.ParseRuntimeTextFromPclntab18(pclntab)
 
 	if textStart == 0 {
+		// pcHeader.textStart is zero (Go 1.26+), fall back to the runtime.text symbol.
+		// https://github.com/golang/go/commit/0e1bd8b5f17e337df0ffb57af03419b96c695fe4
+		if symbols, err := obj.Symbols(); err == nil {
+			for _, s := range symbols {
+				if s.Name == "runtime.text" {
+					textStart = s.Value
+					break
+				}
+			}
+		}
+	}
+	if textStart == 0 {
 		// for older versions text.Addr is enough
 		// https://github.com/golang/go/commit/b38ab0ac5f78ac03a38052018ff629c03e36b864
 		textStart = text.Addr

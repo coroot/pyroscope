@@ -28,8 +28,11 @@ RUN go build -ldflags="-extldflags=-static" -o hello-static hello.go
 
 FROM --platform=linux/amd64 golang:1.26 as go126
 ADD hello.go hello.go
+ADD hello_cgo.go hello_cgo.go
 RUN go build hello.go
 RUN go build -ldflags="-extldflags=-static" -o hello-static hello.go
+# CGO + external linking: C code is placed before runtime.text, so runtime.text != .text.Addr
+RUN CGO_ENABLED=1 go build -ldflags="-linkmode=external" -o hello-cgo hello_cgo.go
 
 FROM scratch
 COPY --from=builder elf elf.debug elf.stripped elf.debuglink elf.nopie elf.nobuildid libexample.so ./elfs/
@@ -44,3 +47,4 @@ COPY --from=go116 /go/hello-static ./elfs/go16-static
 COPY --from=go118 /go/hello-static ./elfs/go18-static
 COPY --from=go120 /go/hello-static ./elfs/go20-static
 COPY --from=go126 /go/hello-static ./elfs/go26-static
+COPY --from=go126 /go/hello-cgo ./elfs/go26-cgo

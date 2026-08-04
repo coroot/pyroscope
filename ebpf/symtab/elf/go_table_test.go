@@ -37,6 +37,7 @@ func TestSelfGoSymbolComparison(t *testing.T) {
 		{"./testdata/elfs/go20-static", true},
 		{"./testdata/elfs/go26", true},        // Go 1.26: pcHeader.textStart is always zero
 		{"./testdata/elfs/go26-static", true}, // Go 1.26: static build
+		{"./testdata/elfs/go26-cgo", true},    // Go 1.26 + cgo, externally linked: runtime.text != .text.Addr
 	}
 	for _, testcase := range ts {
 		t.Run(testcase.f, func(t *testing.T) {
